@@ -121,10 +121,7 @@ class SignalProcessor(ISignalProcessor):
             amplitude_filtered=None,  # Заполнится позже
             noise_spectrum=amp_noise,
             signal_spectrum=amp_signal,
-            optimal_band=(fmin, fmax),
-            snr_improvement=self._calculate_snr_improvement(
-                amp_signal, amp_noise, fmin, fmax
-            )
+            optimal_band=(fmin, fmax)
         )
         
         # 7. Кэширование результатов
@@ -142,7 +139,7 @@ class SignalProcessor(ISignalProcessor):
     
     def _validate_raw_data(self, raw_data: Dict[str, Any]) -> None:
         """Проверка корректности сырых данных"""
-        required_keys = ['raw_data', 'sampling_rate', 'coordinates']
+        required_keys = ['raw_data', 'sampling_rate', 'coordinates', 'inventory']
         for key in required_keys:
             if key not in raw_data:
                 raise ValueError(f"Отсутствует обязательное поле: {key}")
@@ -301,18 +298,6 @@ class SignalProcessor(ISignalProcessor):
         
         return float(fmin), float(fmax)
     
-    def _calculate_snr_improvement(self,
-                                  signal_spectrum: np.ndarray,
-                                  noise_spectrum: np.ndarray,
-                                  fmin: float,
-                                  fmax: float) -> float:
-        """
-        Расчет улучшения SNR после применения фильтра
-        """
-        # Для упрощения - возвращаем коэффициент улучшения
-        # В реальности нужно вычислять SNR до и после фильтрации
-        return 2.0  # Примерное улучшение в 2 раза
-    
     def _apply_bandpass_filter_fft(self,
                                   data: np.ndarray,
                                   sampling_rate: float,
@@ -359,7 +344,8 @@ class SignalProcessor(ISignalProcessor):
         upper_transition_start = fmax - transition_width
         upper_transition_end = fmax + transition_width
         
-        for i, freq in enumerate(frequencies):
+        for i in range(len(frequencies)):
+            freq = frequencies[i]
             if freq < lower_transition_start:
                 mask[i] = 0.0
             elif freq < lower_transition_end:
