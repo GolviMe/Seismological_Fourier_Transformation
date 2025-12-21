@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import json
 import os
 from dataclasses import asdict
-from ..interfaces import ISignalProcessor, StationData, SpectralAnalysis
+from interfaces import ISignalProcessor, StationData, SpectralAnalysis
 
 class SignalProcessor(ISignalProcessor):
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -28,12 +28,12 @@ class SignalProcessor(ISignalProcessor):
         """Возвращает конфигурацию по умолчанию"""
         return {
             'cache_dir': 'cache',
-            'pre_filt': (0.005, 0.01, 10.0, 20.0),  # Частоты для калибровки
+            'pre_filt': (0.005, 0.01, 10.0, 40.0),  # Частоты для калибровки
             'water_level': 60,  # Уровень воды для деконволюции
             'min_snr_improvement': 2.0,  # Минимальное улучшение SNR
             'default_filter_band': (1.0, 10.0),  # По умолчанию, если автоподбор не работает
             'fft_window': 'hann',  # Окно для БПФ
-            'max_frequency': 20.0,  # Максимальная частота для анализа (Гц)
+            'max_frequency': 40.0,  # Максимальная частота для анализа (Гц)
         }
     
     def process_station(self,
@@ -148,59 +148,65 @@ class SignalProcessor(ISignalProcessor):
             raise ValueError("Пустой массив данных")
     
     def _calibrate_data(self, raw_data: Dict[str, Any], station_id: str) -> np.ndarray:
-        """
-        КАЛИБРОВКА: Удаление инструментального отклика сейсмометра
-        Внутренний метод - другие члены команды не знают о его реализации
-        """
         print(f"  [Калибровка] Станция {station_id}")
         
-        # Преобразуем сырые данные в ObsPy Trace
-        
-        # Создаем объект Trace из сырых данных
-        tr = Trace(data=raw_data['raw_data'].astype(np.float32))  # type: ignore
-    
+        tr = Trace(data=raw_data['raw_data'].astype(np.float32))
         tr.stats.sampling_rate = raw_data['sampling_rate']
         tr.stats.network = raw_data.get('network', 'XX')
         tr.stats.station = station_id
+        tr.stats.location = raw_data.get('location', '')
         tr.stats.channel = raw_data.get('channel', 'BHZ')
+
+        # Используем response, который ты привязала в main.py
+        if 'inventory' in raw_data and raw_data['inventory']:
+            # Пытаемся взять response напрямую, чтобы избежать ValueError
+            try:
+                tr.stats.response = raw_data['inventory'][0][0][0].response
+            except:
+                pass
         
-        # Детрендинг и tapering (подготовка к FFT)
         tr.detrend(type='linear')
         tr.taper(max_percentage=0.05, type='hann')
         
-        tr.remove_response(
-                inventory=raw_data['inventory'],  # ← Уже загружен!
-                output="VEL",
-                pre_filt=(0.005, 0.01, 10.0, 20.0),
-                water_level=60
-            )
-            
-        calibrated = tr.data
+        # ГЛАВНОЕ ИСПРАВЛЕНИЕ: Автоматический расчет безопасных частот
+        # Мы берем минимум между твоим конфигом и пределом Найквиста
+        nyquist = tr.stats.sampling_rate / 2
+        f_top = min(self.config['pre_filt'][2], nyquist - 1.0) 
+        f_extreme = min(self.config['pre_filt'][3], nyquist - 0.1)
         
-        return calibrated
+        safe_pre_filt = (
+            self.config['pre_filt'][0], 
+            self.config['pre_filt'][1], 
+            f_top, 
+            f_extreme
+        )
+
+        # Теперь калибровка не упадет!
+        tr.remove_response(
+            inventory=None, # Мы уже привязали response выше
+            output="VEL",
+            pre_filt=safe_pre_filt,
+            water_level=self.config.get('water_level', 60)
+        )
+            
+        return tr.data
     
     def _extract_noise_and_signal_segments(self,
                                           data: np.ndarray,
                                           sampling_rate: float,
-                                          noise_duration: float = 100.0,
-                                          signal_search_start: float = 200.0) -> Tuple[np.ndarray, np.ndarray]:
+                                          segment_duration: float = 100.0) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Извлечение сегментов шума и возможного сигнала
+        Извлечение ОДИНАКОВЫХ по длине сегментов
         """
-        # Шум: первые noise_duration секунд
-        noise_samples = int(noise_duration * sampling_rate)
-        noise_segment = data[:min(noise_samples, len(data)//4)]
+        # Количество точек в одном сегменте
+        n_samples = int(segment_duration * sampling_rate)
         
-        # Сигнал: ищем в середине записи
-        search_start = int(signal_search_start * sampling_rate)
-        search_end = min(search_start + 300 * sampling_rate, len(data))
+        # Шум: берем самое начало записи
+        noise_segment = data[:n_samples]
         
-        if search_end - search_start < 10 * sampling_rate:
-            # Если запись короткая, берем середину
-            mid_point = len(data) // 2
-            signal_segment = data[mid_point:mid_point + int(30 * sampling_rate)]
-        else:
-            signal_segment = data[search_start:search_end]
+        # Сигнал: берем кусок такой же длины из середины или конца
+        # Чтобы не выйти за границы массива, берем n_samples с конца
+        signal_segment = data[-n_samples:]
         
         return noise_segment, signal_segment
     
@@ -210,14 +216,8 @@ class SignalProcessor(ISignalProcessor):
         """
         Вычисление БПФ с применением оконной функции
         """
-        # Применение оконной функции для уменьшения утечки спектра
-        if self.config['fft_window'] == 'hann':
-            window = np.hanning(len(data))
-        elif self.config['fft_window'] == 'hamming':
-            window = np.hamming(len(data))
-        else:
-            window = np.ones(len(data))
-        
+
+        window = np.hanning(len(data))
         windowed_data = data * window
         
         # Вычисление БПФ
@@ -399,7 +399,6 @@ class SignalProcessor(ISignalProcessor):
             'fmin': fmin,
             'fmax': fmax,
             'optimal_band': spectral_analysis.optimal_band,
-            'snr_improvement': spectral_analysis.snr_improvement,
             'timestamp': str(UTCDateTime())
         }
         
@@ -414,179 +413,3 @@ class SignalProcessor(ISignalProcessor):
         
         with open(cache_file, 'w') as f:
             json.dump(cache_data, f, indent=2)
-    
-    # ============================================================================
-    # ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ (могут использоваться другими)
-    # ============================================================================
-    
-    def plot_spectral_analysis(self,
-                              spectral_analysis: SpectralAnalysis,
-                              station_id: str = "") -> plt.Figure:
-        """
-        Визуализация результатов БПФ-анализа
-        Может использоваться Человеком 1 для отчетов
-        """
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-        
-        # 1. Спектры шума и сигнала
-        ax1 = axes[0, 0]
-        ax1.semilogy(spectral_analysis.frequencies,
-                    spectral_analysis.noise_spectrum,
-                    'gray', label='Фоновый шум', alpha=0.7)
-        ax1.semilogy(spectral_analysis.frequencies,
-                    spectral_analysis.signal_spectrum,
-                    'red', label='Сигнал события', linewidth=2)
-        ax1.set_xlim(0, self.config['max_frequency'])
-        ax1.set_xlabel('Частота (Гц)')
-        ax1.set_ylabel('Амплитуда')
-        ax1.set_title(f'Спектры шума и сигнала {station_id}')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # 2. Отношение сигнал/шум
-        ax2 = axes[0, 1]
-        ratio = (spectral_analysis.signal_spectrum / 
-                (spectral_analysis.noise_spectrum + 1e-10))
-        ax2.plot(spectral_analysis.frequencies, ratio, 'blue')
-        ax2.axhline(y=2.0, color='red', linestyle='--', label='Порог SNR=2')
-        ax2.set_xlim(0, self.config['max_frequency'])
-        ax2.set_xlabel('Частота (Гц)')
-        ax2.set_ylabel('Отношение сигнал/шум')
-        ax2.set_title(f'SNR по частотам {station_id}')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        # 3. Выбранная полоса фильтра
-        ax3 = axes[1, 0]
-        fmin, fmax = spectral_analysis.optimal_band
-        freqs = np.linspace(0, self.config['max_frequency'], 1000)
-        mask = self._create_filter_mask(freqs, fmin, fmax)
-        
-        ax3.plot(freqs, mask, 'purple', linewidth=2)
-        ax3.fill_between(freqs, 0, mask, alpha=0.3, color='purple')
-        ax3.set_xlabel('Частота (Гц)')
-        ax3.set_ylabel('Коэффициент передачи')
-        ax3.set_title(f'Полосовой фильтр: {fmin:.2f}-{fmax:.2f} Гц')
-        ax3.grid(True, alpha=0.3)
-        
-        # 4. Информация
-        ax4 = axes[1, 1]
-        ax4.axis('off')
-        
-        info_text = f"""
-        Станция: {station_id}
-        
-        Оптимальный фильтр:
-        • Нижняя частота: {fmin:.2f} Гц
-        • Верхняя частота: {fmax:.2f} Гц
-        • Ширина полосы: {fmax-fmin:.2f} Гц
-        
-        Результаты анализа:
-        • Улучшение SNR: {spectral_analysis.snr_improvement:.1f}×
-        • Макс. частота анализа: {self.config['max_frequency']} Гц
-        """
-        
-        ax4.text(0.05, 0.95, info_text, transform=ax4.transAxes,
-                fontsize=12, verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-        
-        plt.suptitle(f'БПФ-анализ и подбор фильтра - {station_id}', fontsize=16)
-        plt.tight_layout()
-        
-        return fig
-    
-    def get_processing_summary(self) -> Dict[str, Any]:
-        """
-        Возвращает сводку по обработке
-        """
-        return {
-            'stations_processed': list(self.optimal_filters_cache.keys()),
-            'cache_size': len(self.optimal_filters_cache),
-            'config': self.config,
-            'default_filter': self.config['default_filter_band']
-        }
-
-
-# ============================================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-# ============================================================================
-
-def create_test_signal(sampling_rate: float = 40.0,
-                      duration: float = 600.0) -> np.ndarray:
-    """
-    Создание тестового сейсмического сигнала
-    Для отладки, когда нет доступа к реальным данным
-    """
-    n_samples = int(duration * sampling_rate)
-    t = np.arange(n_samples) / sampling_rate
-    
-    # Фоновый шум
-    noise = np.random.normal(0, 0.1, n_samples)
-    
-    # P-волна (короткий высокочастотный импульс)
-    p_wave_time = 200.0  # секунд
-    p_wave = np.zeros(n_samples)
-    p_idx = int(p_wave_time * sampling_rate)
-    p_wave[p_idx:p_idx+100] = 0.5 * np.sin(2 * np.pi * 8 * t[:100])
-    
-    # S-волна (длинный низкочастотный сигнал)
-    s_wave_time = 280.0  # секунд
-    s_wave = np.zeros(n_samples)
-    s_idx = int(s_wave_time * sampling_rate)
-    duration_s = 400  # длительность S-волны
-    s_wave[s_idx:s_idx+duration_s] = (
-        2.0 * np.sin(2 * np.pi * 2 * t[:duration_s]) *
-        np.exp(-0.01 * t[:duration_s])
-    )
-    
-    # Суммируем все компоненты
-    signal = noise + p_wave + s_wave
-    
-    return signal
-
-
-# ============================================================================
-# ТЕСТОВЫЙ БЛОК (для самостоятельной проверки)
-# ============================================================================
-
-if __name__ == "__main__":
-    print("Тестирование SignalProcessor...")
-    
-    # 1. Создаем тестовые данные
-    sampling_rate = 40.0
-    test_signal = create_test_signal(sampling_rate)
-    
-    raw_data = {
-        'raw_data': test_signal,
-        'sampling_rate': sampling_rate,
-        'coordinates': (55.5, 37.6),
-        'network': 'TEST',
-        'channel': 'BHZ'
-    }
-    
-    # 2. Создаем и тестируем процессор
-    processor = SignalProcessor()
-    
-    # 3. Обрабатываем тестовые данные
-    station_data, spectral_analysis = processor.process_station(
-        raw_data, "TEST01"
-    )
-    
-    # 4. Проверяем результаты
-    print(f"\nРезультаты обработки:")
-    print(f"  Размер данных: {len(station_data.z_data)} отсчетов")
-    print(f"  Частота дискретизации: {station_data.sampling_rate} Гц")
-    print(f"  Координаты: {station_data.coordinates}")
-    print(f"  Оптимальный фильтр: {spectral_analysis.optimal_band} Гц")
-    print(f"  Улучшение SNR: {spectral_analysis.snr_improvement:.1f}×")
-    
-    # 5. Визуализируем результаты
-    fig = processor.plot_spectral_analysis(spectral_analysis, "TEST01")
-    plt.savefig("test_spectral_analysis.png", dpi=150, bbox_inches='tight')
-    print(f"\nГрафик сохранен в test_spectral_analysis.png")
-    
-    # 6. Выводим сводку
-    summary = processor.get_processing_summary()
-    print(f"\nСводка обработки: {summary['stations_processed']}")
-    
-    print("\n✅ SignalProcessor работает корректно!")

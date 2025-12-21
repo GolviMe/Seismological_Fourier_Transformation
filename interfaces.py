@@ -56,7 +56,6 @@ class SpectralAnalysis:
     noise_spectrum: np.ndarray       # Спектр шумового участка
     signal_spectrum: np.ndarray      # Спектр сигнального участка
     optimal_band: Tuple[float, float]  # Оптимальная полоса фильтра (fmin, fmax)
-    snr_improvement: float           # Улучшение отношения сигнал/шум
 
 # ============================================================================
 # ИНТЕРФЕЙСЫ (контракты)
