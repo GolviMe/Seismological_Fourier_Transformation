@@ -23,7 +23,7 @@ def test_with_swiss_station():
         return
 
     # Берем первую станцию (аналог CH.HASLI)
-    station_id = list(raw_data_dicts.keys())[0]
+    station_id = list(raw_data_dicts.keys())[2]
     raw_data_dict = raw_data_dicts[station_id]
 
     print(f"\nРаботаем со станцией: {station_id}")

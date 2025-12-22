@@ -295,6 +295,9 @@ class SignalProcessor(ISignalProcessor):
             center = (fmin + fmax) / 2
             fmin = max(0.1, center - 0.5)
             fmax = min(max_freq, center + 0.5)
+
+        if fmax < 3.0:
+            fmax = 4.0
         
         return float(fmin), float(fmax)
     

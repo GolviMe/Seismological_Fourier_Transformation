@@ -11,7 +11,7 @@ class DataLoader:
         self.stations = [
             ("CH", "HASLI"),
             ("II", "BFO"),
-            ("IU", "KONO"),
+            ("IU", "ULN"),
         ]
 
     def download_event_data(
