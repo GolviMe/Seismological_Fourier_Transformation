@@ -1,12 +1,12 @@
 {
-  "station_id": "HASLI",
+  "station_id": "CH.HASLI",
   "fmin": 0.1,
   "fmax": 7.198,
   "optimal_band": [
     0.1,
     7.198
   ],
-  "timestamp": "2025-12-22T16:28:39.811272Z",
+  "timestamp": "2025-12-22T15:27:00.642630Z",
   "frequencies": [
     0.0,
     0.01,
