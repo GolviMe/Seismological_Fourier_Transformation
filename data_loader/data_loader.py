@@ -10,7 +10,7 @@ class DataLoader:
         # Формат: (network, station)
         self.stations = [
             ("CH", "HASLI"),
-            ("II", "BFO"),
+            ("IU", "ANMO"),
             ("IU", "ULN"),
         ]
 

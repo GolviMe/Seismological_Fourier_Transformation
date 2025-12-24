@@ -1,4 +1,47 @@
 from signal_processor.signal_processor import SignalProcessor
+from data_loader.data_loader import DataLoader
+from visualizer.visualizer import Visualizer
+from obspy import UTCDateTime
+
+
+def test_with_swiss_station():
+
+    # 1. Загрузка данных
+    loader = DataLoader()
+    event_time = UTCDateTime("2025-12-21T01:29:00")
+
+    raw_data_dicts = loader.download_event_data(
+        event_time=event_time.datetime,
+        duration_before_min=5,
+        duration_after_min=90
+    )
+
+    if not raw_data_dicts:
+        print("Не удалось загрузить данные!")
+        return
+
+    # 2. Обработка всех станций
+    processor = SignalProcessor()
+
+    for station_id, raw_data_dict in raw_data_dicts.items():
+        station_data, analysis = processor.process_station(
+            raw_data_dict,
+            raw_data_dict["station"]
+        )
+        raw_data_dicts[station_id]["processed_data"] = station_data
+        raw_data_dicts[station_id]["analysis"] = analysis
+
+    # 3. Визуализация
+    epicenter = (46.2, 7.8)  # пример координат
+    Visualizer.plot_seismograms_and_map(raw_data_dicts, epicenter)
+
+
+if __name__ == "__main__":
+    test_with_swiss_station()
+
+
+"""
+from signal_processor.signal_processor import SignalProcessor
 from obspy.clients.fdsn import Client
 from data_loader.data_loader import DataLoader
 from obspy import UTCDateTime
@@ -77,3 +120,5 @@ def test_with_swiss_station():
 
 if __name__ == "__main__":
     test_with_swiss_station()
+
+"""
